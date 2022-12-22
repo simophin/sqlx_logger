@@ -1,3 +1,5 @@
+mod gelf;
+
 use std::net::SocketAddr;
 
 use anyhow::{anyhow, Context};
