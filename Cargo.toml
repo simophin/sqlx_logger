@@ -1,5 +1,5 @@
 [package]
-name = "udp_logger"
+name = "sqlx_logger"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,7 +9,7 @@ edition = "2021"
 anyhow = "1"
 log = "0"
 env_logger = "0"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util", "net", "signal", "time"] }
 sqlx = { version = "0", features = ["mssql", "mysql", "postgres", "sqlite", "any", "runtime-tokio-rustls"] }
 clap = { version = "4", features = ["derive"] }
 async-shutdown = "0"

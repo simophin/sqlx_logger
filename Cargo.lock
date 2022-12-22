@@ -1317,6 +1317,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "sqlx_logger"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-shutdown",
+ "clap",
+ "derive_more",
+ "env_logger",
+ "log",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
 name = "stringprep"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1450,22 +1466,6 @@ name = "typenum"
 version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "497961ef93d974e23eb6f433eb5fe1b7930b659f06d12dec6fc44a8f554c0bba"
-
-[[package]]
-name = "udp_logger"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-shutdown",
- "clap",
- "derive_more",
- "env_logger",
- "log",
- "serde",
- "serde_json",
- "sqlx",
- "tokio",
-]
 
 [[package]]
 name = "unicode-bidi"
