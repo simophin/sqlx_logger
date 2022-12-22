@@ -183,20 +183,17 @@ impl MessageState {
     }
 
     fn are_chunks_continuous(&self) -> bool {
-        let mut gap =
-            self.sorted_chunks
-                .iter()
-                .scan::<Option<&MergeChunk>, _, _>(None, |acc, item| {
-                    let r = match (&acc, item) {
-                        (Some(last), item) if item.start - last.end > 1 => Some(last.end),
-                        _ => None,
-                    };
+        let mut last: Option<&MergeChunk> = None;
+        for chunk in &self.sorted_chunks {
+            match &last {
+                Some(v) if chunk.start - v.end > 1 => return false,
+                _ => {}
+            }
 
-                    acc.replace(item);
-                    r
-                });
+            last.replace(chunk);
+        }
 
-        gap.next().is_none()
+        true
     }
 }
 
@@ -271,11 +268,39 @@ mod tests {
     }
 
     #[test]
-    fn chunked_with_gaps() {
+    fn chunked_with_disorders() {
         let expect = "123456789";
         test_chunked(
             expect,
-            &[(0u8, &expect[0..3]), (2, &expect[6..9]), (1, &expect[3..6])],
+            &[(0, &expect[0..3]), (2, &expect[6..9]), (1, &expect[3..6])],
+        );
+    }
+
+    #[test]
+    fn chunked_with_duplications() {
+        let expect = "123456789";
+        test_chunked(
+            expect,
+            &[
+                (0, &expect[0..3]),
+                (1, &expect[3..6]),
+                (1, &expect[3..6]),
+                (2, &expect[6..9]),
+            ],
+        );
+    }
+
+    #[test]
+    fn chunked_with_disorders_and_duplications() {
+        let expect = "123456789";
+        test_chunked(
+            expect,
+            &[
+                (2, &expect[6..9]),
+                (1, &expect[3..6]),
+                (1, &expect[3..6]),
+                (0, &expect[0..3]),
+            ],
         );
     }
 }
