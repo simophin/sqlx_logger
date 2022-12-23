@@ -66,24 +66,14 @@ impl GELFState {
                 _ => {}
             }
 
-            if seq == 0 {
-                self.messages.insert(
-                    id.clone(),
-                    MessageState {
-                        first_arrived: Instant::now(),
-                        total_seq,
-                        sorted_chunks: Default::default(),
-                    },
-                );
-            }
-
-            // Do we have existing chunk?
-            let state = match self.messages.get_mut(&id) {
-                Some(v) => v,
-                None => {
-                    bail!("Received non-0 seq chunk which does not exist");
-                }
-            };
+            let state = self
+                .messages
+                .entry(id.clone())
+                .or_insert_with(|| MessageState {
+                    first_arrived: Instant::now(),
+                    total_seq,
+                    sorted_chunks: Default::default(),
+                });
 
             let rs = state.try_merge(seq, data);
 
@@ -163,6 +153,7 @@ impl MessageState {
 
         // Check if we have full data
         if self.sorted_chunks.last().unwrap().end == self.total_seq - 1
+            && self.sorted_chunks.first().unwrap().start == 0
             && self.are_chunks_continuous()
         {
             let num_total_bytes = self
@@ -236,13 +227,13 @@ mod tests {
         assert_eq!(expect, actual.as_ref());
     }
 
-    fn test_chunked(input_message: &str, chunks: &[(u8, &str)]) {
+    fn test_chunked(input_message: &str, num_total: u8, chunks: &[(u8, &str)]) {
         let mut state = GELFState::default();
 
         let id: MessageID = Default::default();
 
         for (seq, data) in chunks.iter().take(chunks.len() - 1) {
-            let input = new_chunk_message(&id, *seq, chunks.len() as u8, data);
+            let input = new_chunk_message(&id, *seq, num_total, data);
             let rs = state.on_data(&input);
 
             assert!(matches!(rs, Ok(None)));
@@ -263,6 +254,7 @@ mod tests {
         let expect = "123456789";
         test_chunked(
             expect,
+            3,
             &[(0u8, &expect[0..3]), (1, &expect[3..6]), (2, &expect[6..9])],
         );
     }
@@ -272,6 +264,7 @@ mod tests {
         let expect = "123456789";
         test_chunked(
             expect,
+            3,
             &[(0, &expect[0..3]), (2, &expect[6..9]), (1, &expect[3..6])],
         );
     }
@@ -281,6 +274,7 @@ mod tests {
         let expect = "123456789";
         test_chunked(
             expect,
+            3,
             &[
                 (0, &expect[0..3]),
                 (1, &expect[3..6]),
@@ -295,6 +289,7 @@ mod tests {
         let expect = "123456789";
         test_chunked(
             expect,
+            3,
             &[
                 (2, &expect[6..9]),
                 (1, &expect[3..6]),
