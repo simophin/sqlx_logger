@@ -27,7 +27,7 @@ struct MessageState {
 }
 
 #[derive(Default)]
-struct GELFState {
+pub struct GELFState {
     messages: HashMap<MessageID, MessageState>,
 }
 
@@ -87,7 +87,7 @@ impl GELFState {
         }
     }
 
-    fn clean_up(&mut self, now: Instant) {
+    pub fn clean_up(&mut self, now: Instant) {
         self.messages
             .retain(|_, item| now - item.first_arrived < MAX_CHUNKED_MESSAGE_DURATION);
     }
@@ -297,5 +297,23 @@ mod tests {
                 (0, &expect[0..3]),
             ],
         );
+    }
+
+    #[test]
+    fn chunked_with_timeout() {
+        let mut state = GELFState::default();
+
+        let message = "123456789";
+        let id: MessageID = Default::default();
+
+        let input = new_chunk_message(&id, 0, 2, &message[..4]);
+        let output = state.on_data(&input);
+        assert!(matches!(output, Ok(None)));
+
+        state.clean_up(Instant::now() + MAX_CHUNKED_MESSAGE_DURATION + Duration::from_secs(1));
+
+        let input = new_chunk_message(&id, 1, 2, &message[4..]);
+        let output = state.on_data(&input);
+        assert!(matches!(output, Ok(None)));
     }
 }

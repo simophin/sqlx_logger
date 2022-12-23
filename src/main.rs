@@ -1,19 +1,17 @@
 mod gelf;
 
-use std::net::SocketAddr;
+use std::{
+    net::SocketAddr,
+    time::{Duration, Instant},
+};
 
 use anyhow::{anyhow, Context};
 use async_shutdown::Shutdown;
 use clap::{Parser, ValueEnum};
 use derive_more::Display;
+use gelf::GELFState;
 use sqlx::{any::AnyStatement, Any, AnyPool, Executor, Pool, Statement, Transaction};
-use tokio::{
-    io::{AsyncBufReadExt, BufReader},
-    net::{TcpListener, TcpStream},
-    select,
-    signal::ctrl_c,
-    spawn,
-};
+use tokio::{net::UdpSocket, select, signal::ctrl_c, spawn};
 
 #[derive(Debug, Display, ValueEnum, Clone)]
 enum FilterFormat {
@@ -46,8 +44,8 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    //std::env::set_var("RUST_LOG", "sqlx_logger=DEBUG");
-    std::env::set_var("RUST_LOG", "sqlx_logger=INFO");
+    // std::env::set_var("RUST_LOG", "sqlx_logger=DEBUG");
+    // std::env::set_var("RUST_LOG", "sqlx_logger=INFO");
     env_logger::init();
 
     let shutdown = Shutdown::new();
@@ -81,71 +79,24 @@ async fn run_with_args(
         .await
         .with_context(|| format!("Connecting to {db_url}"))?;
 
-    pool.prepare(&sql)
+    let st = pool
+        .prepare(&sql)
         .await
         .with_context(|| format!("Checking SQL: {sql}"))?;
 
-    let listener = TcpListener::bind(&listen)
+    let socket = UdpSocket::bind(&listen)
         .await
-        .with_context(|| format!("Listening on {listen}"))?;
+        .with_context(|| format!("Listening on udp://{listen}"))?;
 
-    log::info!("Listening on tcp://{listen}");
+    log::info!("Listening on udp://{listen}");
     log::info!("Connected to {db_url}");
 
-    while let Some(v) = shutdown.wrap_cancel(listener.accept()).await {
-        let (socket, addr) = v.context("Accepting TCP client")?;
-        log::info!("Accepted client from {addr}");
-
-        let shutdown = shutdown.clone();
-        let sql = sql.clone();
-        let pool = pool.clone();
-        let filter = filter.clone();
-
-        spawn(async move {
-            if let Err(e) = serve_client(
-                socket,
-                shutdown.clone(),
-                sql.clone(),
-                pool.clone(),
-                filter.clone(),
-                db_batch,
-            )
-            .await
-            {
-                log::error!("Error serving client {addr}: {e:?}");
-            }
-        });
-    }
-
-    Ok(())
-}
-
-async fn serve_client(
-    socket: TcpStream,
-    shutdown: Shutdown,
-    sql: String,
-    pool: Pool<Any>,
-    filter: FilterFormat,
-    db_batch: usize,
-) -> anyhow::Result<()> {
     let mut tx: Option<Transaction<Any>> = None;
 
-    let rs = do_process_log(
-        socket,
-        shutdown,
-        &pool
-            .prepare(&sql)
-            .await
-            .with_context(|| format!("Preparing SQL: \"{sql}\""))?,
-        pool,
-        filter,
-        db_batch,
-        &mut tx,
-    )
-    .await;
+    let rs = do_process_log(socket, shutdown, &st, pool, filter, db_batch, &mut tx).await;
 
     if let Some(tx) = tx {
-        log::info!("Committed the pending transactions");
+        log::info!("Committed pending transactions");
         let _ = tx.commit().await;
     }
 
@@ -154,8 +105,10 @@ async fn serve_client(
     rs
 }
 
+const CLEAN_UP_INTERVAL: Duration = Duration::from_secs(60);
+
 async fn do_process_log(
-    socket: TcpStream,
+    socket: UdpSocket,
     shutdown: Shutdown,
     st: &AnyStatement<'_>,
     pool: Pool<Any>,
@@ -163,31 +116,40 @@ async fn do_process_log(
     db_batch: usize,
     tx: &mut Option<Transaction<'_, Any>>,
 ) -> anyhow::Result<()> {
-    let mut socket = BufReader::new(socket);
+    let mut state: GELFState = Default::default();
     let mut num_inserts = 0usize;
-    let mut buf = Vec::new();
-    loop {
-        buf.clear();
-        let buf = match shutdown.wrap_cancel(socket.read_until(0u8, &mut buf)).await {
-            None | Some(Ok(0)) => return Ok(()),
-            Some(Err(e)) => return Err(e.into()),
-            Some(Ok(v)) => &buf[..v - 1],
+    let mut buf = vec![0u8; 65536];
+    let mut last_cleanup: Option<Instant> = None;
+    while let Some(v) = shutdown.wrap_cancel(socket.recv(&mut buf)).await {
+        match (&last_cleanup, Instant::now()) {
+            (Some(last), n) if n - *last > CLEAN_UP_INTERVAL => {
+                log::info!("Cleaning up messages");
+                state.clean_up(n);
+                last_cleanup.replace(n);
+            }
+            _ => {}
+        }
+
+        let buf = &buf[..v.context("Receiving packet")?];
+
+        let entry = match state.on_data(&buf) {
+            Ok(Some(data)) => data,
+            Ok(None) => {
+                log::debug!("More data needed");
+                continue;
+            }
+            Err(err) => {
+                log::error!("Error handling incoming data: {err:?}");
+                continue;
+            }
         };
 
-        let entry = match std::str::from_utf8(buf) {
-            Ok(v) if filter.accepts(v) => {
-                log::debug!("Accepted: {v}");
-                v
-            }
-            Ok(v) => {
-                log::debug!("Filtering out line: {v}");
-                continue;
-            }
-            Err(e) => {
-                log::info!("Error converting line to UTF-8: {e:?}");
-                continue;
-            }
-        };
+        if !filter.accepts(entry.as_ref()) {
+            log::debug!("DENIED: {entry}");
+            continue;
+        } else {
+            log::debug!("ACCEPTED: {entry}");
+        }
 
         let t = match tx.as_mut() {
             Some(v) => v,
@@ -199,11 +161,12 @@ async fn do_process_log(
 
         let r = st
             .query()
-            .bind(entry)
+            .bind(entry.as_ref())
             .execute(t)
             .await
             .context("Executing SQL")?;
         log::debug!("Inserted {} rows", r.rows_affected());
+        num_inserts += 1;
 
         if num_inserts >= db_batch {
             tx.take()
@@ -211,10 +174,12 @@ async fn do_process_log(
                 .commit()
                 .await
                 .context("Committing transactions")?;
-            log::debug!("Committed {num_inserts} transactions");
+            log::info!("Committed {num_inserts} transactions");
             num_inserts = 0;
         }
     }
+
+    Ok(())
 }
 
 impl FilterFormat {
